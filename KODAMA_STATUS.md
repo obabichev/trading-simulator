@@ -1,0 +1,197 @@
+# Kodama Integration Status
+
+## ✅ FIXED: Generated Methods Now Available in Main Source Set!
+
+The previous issue where generated insert methods were not available during compilation of main sources **has been resolved**!
+
+### What Works Now
+
+- ✅ Generated `insert()` methods are available in main sources
+- ✅ Date/time column types work perfectly (`date()`, `timestamp()`, etc.)
+- ✅ Type-safe inserts with compile-time validation
+- ✅ Proper type mapping: `LocalDate`, `LocalDateTime`, `BigDecimal`, etc.
+- ✅ Primary key markers with `.primaryKey()`
+- ✅ Build and compilation succeed
+
+### Example - Working Code
+
+```kotlin
+import com.obabichev.trading.schema.SimulationRun
+import com.obabichev.trading.schema.generated.insert
+
+// This now compiles successfully! ✅
+val insertResult = SimulationRun.insert(
+    transaction = transaction,
+    id = 0,
+    strategyName = "Buy and Hold",
+    symbol = "AAPL",
+    startDate = LocalDate.of(2023, 12, 21),
+    endDate = LocalDate.of(2025, 12, 19),
+    executedAt = LocalDateTime.now(),
+    // ... other fields
+)
+```
+
+---
+
+## ⚠️ NEW ISSUE: Auto-Increment Primary Keys
+
+### Problem Description
+
+Kodama's generated `insert()` methods don't properly handle SERIAL/auto-increment primary keys. The method requires ALL columns as parameters (including the ID), and includes them all in the INSERT statement. This causes PostgreSQL to insert the literal value instead of auto-generating one.
+
+### Current Behavior
+
+```kotlin
+// Table definition with primary key
+object SimulationRun : Table("simulation_run") {
+    val id = integer("id").primaryKey()  // SERIAL PRIMARY KEY in PostgreSQL
+    val strategyName = varchar("strategy_name", 255)
+    // ... other columns
+}
+
+// Insert requires id parameter
+val result = SimulationRun.insert(
+    transaction = transaction,
+    id = 0,  // ❌ PostgreSQL inserts literal 0 instead of auto-generating
+    strategyName = "Buy and Hold",
+    // ... other fields
+)
+
+// generatedKeys just returns what we inserted
+println(result.generatedKeys["id"])  // Prints: 0 (not auto-generated)
+```
+
+### Database State
+
+```sql
+SELECT id FROM simulation_run;
+ id
+----
+  0   -- Literal 0, not auto-generated!
+```
+
+### Expected Behavior
+
+When a column is marked with `.primaryKey()` and the database table uses SERIAL:
+
+**Option 1**: Exclude auto-increment columns from the INSERT statement
+```sql
+-- Generated SQL should be:
+INSERT INTO simulation_run (strategy_name, symbol, ...)  -- id excluded
+VALUES ('Buy and Hold', 'AAPL', ...)
+RETURNING id;  -- PostgreSQL auto-generates id
+```
+
+**Option 2**: Make auto-increment columns optional parameters
+```kotlin
+fun SimulationRun.insert(
+    transaction: JdbcTransaction,
+    id: Int? = null,  // Optional, uses DEFAULT if null
+    strategyName: String,
+    // ... other fields
+)
+```
+
+**Option 3**: Add an `.autoIncrement()` modifier
+```kotlin
+object SimulationRun : Table("simulation_run") {
+    val id = integer("id").primaryKey().autoIncrement()  // Excluded from INSERT
+    // ... other columns
+}
+```
+
+### Impact
+
+- **Severity**: High
+- Auto-increment primary keys don't work as expected
+- Tables end up with id = 0 for all rows
+- Cannot properly retrieve generated IDs
+- Breaks standard database patterns
+
+### Workaround
+
+For now, we can:
+1. Use raw SQL for INSERTs with RETURNING clause
+2. Or manually manage sequences (not ideal)
+3. Or use non-SERIAL primary keys (also not ideal)
+
+### Investigation Results
+
+Debug output shows the issue clearly:
+```
+InsertResult: rowsAffected=1,
+generatedKeys={
+  id=0,  // ❌ The literal value we passed, not auto-generated
+  strategy_name=Buy and Hold,
+  symbol=AAPL,
+  // ... all other inserted values
+}
+```
+
+The `generatedKeys` map contains ALL inserted values, not just auto-generated ones.
+
+---
+
+## Summary for Kodama Maintainers
+
+### What's Working Great ✅
+
+1. **Source Set Integration**: Generated code is now properly available in main sources
+2. **Date/Time Types**: Full support with excellent type mapping
+3. **Type Safety**: Compile-time validation works perfectly
+4. **Code Generation**: Fast and reliable
+
+### What Needs Attention ⚠️
+
+1. **Auto-Increment Primary Keys**:
+   - Generated insert methods should handle SERIAL/auto-increment columns
+   - Either exclude them from INSERT or make them optional parameters
+   - `generatedKeys` should return only actual generated values, not all inserted values
+
+### Suggested API Design
+
+```kotlin
+// Option A: Separate methods
+fun Table.insert(...)  // All columns required
+fun Table.insertReturning(...)  // Excludes auto-increment, returns generated values
+
+// Option B: Auto-detect
+object SimulationRun : Table("simulation_run") {
+    val id = integer("id").primaryKey()  // Auto-detected as SERIAL from migration
+}
+
+// Option C: Explicit marker
+object SimulationRun : Table("simulation_run") {
+    val id = serial("id").primaryKey()  // Dedicated serial type
+    // or
+    val id = integer("id").primaryKey().autoGenerated()
+}
+```
+
+### Test Case
+
+Minimal reproducible example available at:
+- Repository: `/Users/Oleg.Babichev/dev/trading-simulator`
+- Affected file: `src/main/kotlin/com/obabichev/trading/persistence/SimulationResultPersistence.kt`
+- Database migration: `src/main/resources/db/migration/V2__create_simulation_run.sql`
+
+The project successfully compiles and runs, but IDs are inserted as 0 instead of being auto-generated.
+
+---
+
+## Current Project Status
+
+The trading simulator is working with Kodama's type-safe DSL! ✅
+
+- All table definitions use proper date/timestamp types
+- Insert methods are available and working
+- Only limitation is auto-increment primary keys
+
+The simulation successfully:
+- Loads CSV market data
+- Executes trading strategy
+- Saves results using Kodama's insert methods
+- Just needs proper primary key handling
+
+Great progress on Kodama - the main plugin issue is resolved!
